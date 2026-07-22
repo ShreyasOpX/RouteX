@@ -176,3 +176,238 @@ The `kafka` service runs one Kafka broker locally. The `KAFKA_*` values establis
 5. If the controller can return an HTTP response without the consumer method being called immediately, what does that tell you about their coupling?
 
 Reply with your answers before we move to the next phase. In particular, explain the producer-to-broker-to-consumer path in your own words.
+
+---
+
+# Phase 2 - Event Chaining
+
+> Implementation rule for this phase: you write the Java code. This document specifies the design, class responsibilities, and verification steps, but deliberately contains no implementation code.
+
+## Goal
+
+Turn the Phase 1 single-event example into an event-driven pipeline. A ride request should lead to an assignment event, which should lead to a passenger notification.
+
+```text
+HTTP request
+  -> RideRequestController
+  -> RideRequestedEvent
+  -> Kafka topic: ride-requested
+  -> RideRequestedConsumer
+  -> DriverAssignmentService
+  -> DriverAssignedEvent
+  -> Kafka topic: driver-assigned
+  -> NotificationConsumer
+  -> console notification
+```
+
+## Problem
+
+Logging a ride request does not create any business outcome. A dispatch platform must assign a driver, then notify the passenger. Putting both responsibilities into the HTTP controller, or into one large Kafka listener, couples unrelated work together.
+
+Event chaining solves this by making each completed business fact the input to the next focused responsibility. The assignment stage reacts to a ride request. The notification stage reacts to a completed assignment. Neither stage needs a direct Java or HTTP call to the other.
+
+## Theory: events, commands, and an event chain
+
+An **event** is an immutable statement that something has already happened. `RideRequestedEvent` means a ride request was accepted. `DriverAssignedEvent` means RouteX has assigned a driver.
+
+A **command** asks for work to happen. For example, `AssignDriverCommand` would request an assignment. We are not introducing commands in this phase; the assignment listener reacts to the completed fact represented by `RideRequestedEvent` and publishes the completed outcome represented by `DriverAssignedEvent`.
+
+An **event chain** is a sequence where a component consumes a completed fact, performs its own responsibility, and publishes another completed fact. It is not a chain of direct method calls between business capabilities.
+
+## Kafka internals
+
+1. The broker persists a `RideRequestedEvent` record in `ride-requested`.
+2. Spring Kafka's listener container obtains that record and deserializes its JSON bytes into `RideRequestedEvent`.
+3. `RideRequestedConsumer` passes the event to assignment logic.
+4. The assignment logic creates a `DriverAssignedEvent`.
+5. The consumer uses a Kafka producer to serialize and send that new event to `driver-assigned`.
+6. Kafka persists the new record independently from the original record.
+7. Spring Kafka's notification listener reads and deserializes the `driver-assigned` record.
+8. `NotificationConsumer` prints the notification.
+
+Kafka does not invoke the notification consumer from the assignment consumer. Kafka stores records under topic names; consumers independently read the topics they subscribe to. This is why the assignment capability does not need the notification capability's network address, Java type, or deployment schedule.
+
+## Why this architecture exists
+
+The assignment capability should decide who drives. The notification capability should communicate the outcome. Those are separate reasons to change, so they should be separate components.
+
+This creates a clean extension point: an Analytics service could later consume `driver-assigned` without changing assignment or notification code. This pattern is common in large event-driven systems where matching, pricing, fraud checks, customer communication, and analytics are owned and deployed independently.
+
+For this local application all components run in one Spring Boot process. The Kafka topic boundary is still valuable because it models the same decoupled contract that would exist if these capabilities became separate services.
+
+## Spring Kafka mapping
+
+| Application responsibility | Spring/Kafka mechanism |
+| --- | --- |
+| Read `ride-requested` events | `@KafkaListener` on `RideRequestedConsumer` |
+| Select a driver | A regular Spring `@Service` |
+| Send `DriverAssignedEvent` | `KafkaTemplate` |
+| Store assignment events | Kafka topic `driver-assigned` |
+| Read assignment events | `@KafkaListener` on `NotificationConsumer` |
+| Create the topic at startup | `NewTopic` bean in topic configuration |
+
+`@KafkaListener` causes Spring Kafka to create a listener container around Kafka's Java consumer client. It polls Kafka in the background and invokes the annotated method after deserialization.
+
+`KafkaTemplate` wraps Kafka's Java producer client. When you send a `DriverAssignedEvent`, the configured JSON serializer turns it into bytes and the producer sends those bytes to the broker.
+
+## Package plan
+
+Keep existing Phase 1 files in `com.routex.dispatch`. Create the following packages:
+
+```text
+com.routex.assignment
+com.routex.assignment.event
+com.routex.assignment.messaging
+com.routex.assignment.service
+com.routex.notification
+com.routex.notification.messaging
+```
+
+Responsibilities:
+
+| Package | Owns |
+| --- | --- |
+| `assignment.event` | Assignment-related event contracts. |
+| `assignment.messaging` | Kafka-facing adapters for assignment. |
+| `assignment.service` | Driver-selection business logic. |
+| `notification.messaging` | Kafka-facing adapters for notifications. |
+
+Keep the topic names in the existing topic configuration class for this phase. Do not duplicate topic-name strings across producer and consumer classes.
+
+## Classes you should create
+
+### `DriverAssignedEvent`
+
+Package: `com.routex.assignment.event`
+
+Create an immutable Java record representing a completed assignment. Include:
+
+- `rideId`
+- `passengerId`
+- `driverId`
+- `assignedAt`
+
+`rideId` ties the assignment to its originating ride request. Include `passengerId` because the notification consumer needs enough data to notify the passenger without reconstructing it elsewhere. `driverId` is the assignment outcome. `assignedAt` captures when that outcome was produced.
+
+### `DriverAssignmentService`
+
+Package: `com.routex.assignment.service`
+
+Annotate this class with `@Service`. This registers it as a Spring bean and communicates that it owns application/business behavior.
+
+Give it one public method that accepts a `RideRequestedEvent` and returns a `DriverAssignedEvent`.
+
+Inside the method:
+
+1. Accept the requested-ride fact.
+2. Select a deterministic placeholder driver ID, such as `driver-demo-101`.
+3. Carry the original ride ID and passenger ID into a new assignment event.
+4. Set the assignment timestamp.
+5. Return the event.
+
+Do not put Kafka publishing in this service in Phase 2. Its job is to make an assignment decision, not to know messaging infrastructure.
+
+### `RideRequestedConsumer`
+
+Package: `com.routex.assignment.messaging`
+
+Register this class as a Spring component. It needs two dependencies: `DriverAssignmentService` and a `KafkaTemplate` that can send `DriverAssignedEvent` values.
+
+Create one listener method annotated with `@KafkaListener` for `ride-requested`.
+
+Inside the listener method:
+
+1. Receive the deserialized `RideRequestedEvent`.
+2. Delegate to `DriverAssignmentService`.
+3. Receive the resulting `DriverAssignedEvent`.
+4. Send it to `driver-assigned` using the original `rideId` as the message key.
+
+This class adapts Kafka input to the assignment use case and publishes its outcome. It must not contain driver-selection rules.
+
+### `NotificationConsumer`
+
+Package: `com.routex.notification.messaging`
+
+Register this class as a Spring component.
+
+Create one listener method annotated with `@KafkaListener` for `driver-assigned`.
+
+Inside the method:
+
+1. Receive the deserialized `DriverAssignedEvent`.
+2. Build a clear console message identifying the passenger, ride, and assigned driver.
+3. Print the message.
+
+Console output is deliberately the entire notification implementation for this phase. Do not build push, email, or SMS infrastructure yet.
+
+### Update `KafkaTopicConfiguration`
+
+Add a constant for `driver-assigned` and add a second `NewTopic` bean for it.
+
+`@Configuration` identifies the class as a source of bean definitions. `@Bean` registers the returned `NewTopic` object with Spring; Spring Boot's Kafka admin support then asks the broker to create the topic at application startup.
+
+## Configuration task
+
+Both new event types remain below `com.routex`, so retain a narrow JSON trusted-package allow-list such as `com.routex`. Do not use a wildcard trusted package just to make deserialization work.
+
+Configure distinct consumer listener identities for the assignment listener and notification listener. They must not share the same identity. We will study the consumer-group mechanics underlying those identities in a later phase; for now use purpose-revealing values, one for assignment and one for notification.
+
+## Annotation reference
+
+| Annotation | Where to use it | Why |
+| --- | --- | --- |
+| `@Service` | `DriverAssignmentService` | Registers business logic as a Spring bean and communicates its responsibility. |
+| `@Component` | Kafka consumer classes | Registers the class so Spring can discover listener methods. |
+| `@KafkaListener` | Each listener method | Starts a Spring Kafka listener container for the specified topic. |
+| `@Configuration` | Existing topic configuration | Declares a source of Spring bean definitions. |
+| `@Bean` | Each topic factory method | Registers a `NewTopic` for Kafka-admin topic creation. |
+
+## Common beginner mistakes
+
+- Putting assignment rules directly inside `RideRequestedConsumer` instead of `DriverAssignmentService`.
+- Publishing `DriverAssignedEvent` from `RideRequestController`, which bypasses the event-driven pipeline.
+- Reusing `RideRequestedEvent` on the `driver-assigned` topic. A topic should contain the fact its name promises.
+- Omitting `rideId` from the assignment event and losing the business link between request and assignment.
+- Hardcoding `driver-assigned` in several classes.
+- Calling assignment logic from the notification consumer.
+- Letting the HTTP caller provide the driver ID. Driver assignment is server-owned business logic.
+- Adding retries, transactions, or advanced consumer configuration before understanding the basic chain.
+
+## Production perspective
+
+The fixed demo driver is intentional. A production assignment service would need nearby-driver search, availability data, eligibility checks, concurrency protection, an assignment policy, observability, and clear failure handling.
+
+Production event contracts also need careful evolution: consumers may be deployed at different times, so avoid casually removing or renaming event fields. You will study resilient delivery, failure handling, and duplicate-safe business behavior after the basic event chain is solid.
+
+## Implementation checklist
+
+1. Add the `driver-assigned` topic to the topic configuration.
+2. Create `DriverAssignedEvent` as an immutable record.
+3. Create `DriverAssignmentService` with a fixed demo driver assignment.
+4. Create `RideRequestedConsumer` to consume, delegate, and publish.
+5. Create `NotificationConsumer` to consume and log.
+6. Configure separate listener identities for assignment and notification.
+7. Start Kafka and RouteX.
+8. Submit one HTTP ride request.
+9. Verify `ride-requested` contains the request in Kafka UI.
+10. Verify `driver-assigned` contains the assignment in Kafka UI.
+11. Verify the RouteX console prints the notification after the assignment event is consumed.
+
+## Questions before the next milestone
+
+### Backend interview questions
+
+1. Why should `DriverAssignmentService` return a `DriverAssignedEvent` instead of publishing directly to Kafka?
+2. Why publish `DriverAssignedEvent` to a separate topic rather than call notification code from the assignment consumer?
+3. What business fact does `DriverAssignedEvent` represent, and why should it be immutable?
+
+### Production debugging scenarios
+
+1. Kafka UI shows new `ride-requested` records but `driver-assigned` remains empty. Which component boundaries would you inspect first, and what evidence would you seek?
+2. Kafka UI shows `driver-assigned` records but no notification appears in the console. How would you distinguish a notification-listener problem from a deserialization problem?
+
+### Architectural design question
+
+An Analytics team wants a real-time count of assignments. Would you modify `RideRequestedConsumer`, modify `NotificationConsumer`, or add a new consumer of `driver-assigned`? Explain the coupling consequences.
+
+Do not proceed to the next milestone until you can answer these questions and have had your implementation reviewed.
