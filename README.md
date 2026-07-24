@@ -411,3 +411,120 @@ Production event contracts also need careful evolution: consumers may be deploye
 An Analytics team wants a real-time count of assignments. Would you modify `RideRequestedConsumer`, modify `NotificationConsumer`, or add a new consumer of `driver-assigned`? Explain the coupling consequences.
 
 Do not proceed to the next milestone until you can answer these questions and have had your implementation reviewed.
+
+---
+
+# Phase 3 - Persist the Assignment Event (No Consumer Yet)
+
+## Goal
+
+Extend the working ride-request flow so that driver matching produces and publishes a second event, `DriverAssignmentEvent`, to the `driver-assigned` topic.
+
+This is intentionally an intermediate state. RouteX does **not** yet have a listener for `driver-assigned`. After Kafka stores an assignment record, no application component acts on it. That is the expected result for this phase.
+
+```text
+HTTP POST /rides/requests
+  -> RideRequestController
+  -> RideRequestedEvent
+  -> KafkaTemplate
+  -> Kafka topic: ride-requested
+  -> DriverMatchingConsumer
+  -> DriverAssignmentService
+  -> DriverAssignmentEvent
+  -> DriverAssignmentProducer
+  -> KafkaTemplate
+  -> Kafka topic: driver-assigned
+  -> Kafka broker log
+  -> no consumer yet
+```
+
+## What is implemented
+
+| Component | Responsibility |
+| --- | --- |
+| `KafkaTopicConfiguration` | Defines `ride-requested` and `driver-assigned` as `NewTopic` beans. Kafka admin creates them at application startup when they do not already exist. |
+| `DriverMatchingConsumer` | Listens to `ride-requested`, delegates matching, then hands the completed assignment event to the producer. |
+| `DriverAssignmentService` | Selects one of the in-memory demo drivers and creates a `DriverAssignmentEvent`. It does not know about Kafka. |
+| `DriverAssignmentEvent` | Immutable Java record containing the ride, passenger, driver, vehicle, and assignment timestamp. |
+| `DriverAssignmentProducer` | Publishes the assignment event to `driver-assigned`, keyed by `rideId`. |
+
+### `DriverAssignmentEvent` contract
+
+The current event contains:
+
+| Field | Meaning |
+| --- | --- |
+| `rideId` | Correlates the assignment with the original ride request. It is also the Kafka message key. |
+| `passengerId` | Identifies the passenger whose ride was assigned. |
+| `driverId` | Identifies the selected demo driver. |
+| `driverName` | Human-readable driver name for later notification or display use. |
+| `vehicleNumber` | Selected driver's vehicle identifier. |
+| `assignedAt` | UTC timestamp at which the assignment event was created. |
+
+The event name in the current code is `DriverAssignmentEvent`. Keep this name consistent in any later consumer and documentation; it is the event actually serialized onto `driver-assigned`.
+
+## Why stopping here is useful
+
+Kafka separates producing a fact from reacting to it. `DriverMatchingConsumer` does not call notification code, and no notification component is required for matching to finish.
+
+Once an assignment event has been accepted by Kafka, a later notification consumer can be introduced independently. It can subscribe to `driver-assigned` without changing the HTTP controller, matching consumer, assignment service, or assignment producer.
+
+The absence of a consumer is therefore not a failure. It proves that the assignment stage has a durable topic boundary rather than a direct in-process dependency on the next capability.
+
+## Runtime behavior and limits
+
+`KafkaTemplate.send(...)` is asynchronous in both the request controller and assignment producer. The current code does not wait for the returned future or add a failure callback. A successful HTTP `202 Accepted` means the controller handed the request event to its Kafka producer client; it is not an end-to-end acknowledgement that the assignment event has been written or consumed.
+
+Kafka appends the `driver-assigned` event to the broker's topic log. In this local Compose setup there is no declared Docker volume for Kafka data. Treat the records as local development data: removing or recreating the Kafka container can remove them. Do not interpret this setup as a production durability configuration.
+
+There is one configured consumer group, `routex-ride-request-logger`, and it is used by `DriverMatchingConsumer` for `ride-requested`. No consumer group subscribes to `driver-assigned` in this phase.
+
+The JSON trusted-package setting currently allows `com.routex.dispatch`. That is sufficient here because RouteX only deserializes `RideRequestedEvent` from the `ride-requested` topic. Before adding a consumer for `DriverAssignmentEvent`, extend the allow-list narrowly to include `com.routex.matching`; do not replace it with a wildcard.
+
+## Test this phase
+
+1. Start Kafka and Kafka UI:
+
+   ```powershell
+   docker compose up -d
+   ```
+
+2. Confirm Kafka is reachable before starting RouteX:
+
+   ```powershell
+   Test-NetConnection localhost -Port 9092
+   ```
+
+   `TcpTestSucceeded` must be `True`.
+
+3. Start RouteX:
+
+   ```powershell
+   mvn spring-boot:run
+   ```
+
+4. In another PowerShell window, publish a ride request:
+
+   ```powershell
+   Invoke-RestMethod -Method Post -Uri "http://localhost:8080/rides/requests" -ContentType "application/json" -Body '{"passengerId":"passenger-42","pickupLocation":"Koramangala","destinationLocation":"Indiranagar"}'
+   ```
+
+5. In Kafka UI at `http://localhost:8081`, inspect both topics:
+
+   - `ride-requested` must contain the submitted request event.
+   - `driver-assigned` must contain one assignment event with the same `rideId`.
+   - No notification output is expected because no listener subscribes to `driver-assigned`.
+
+## Debugging checklist
+
+| Observation | Likely boundary to inspect |
+| --- | --- |
+| Application fails during startup with `Could not configure topics` or a timeout | Kafka is not reachable at `localhost:9092`. Check `docker compose ps`, `docker compose logs kafka`, and `Test-NetConnection localhost -Port 9092`. |
+| `ride-requested` has records but `driver-assigned` has none | Inspect the RouteX console for listener errors, then inspect `DriverMatchingConsumer`, `DriverAssignmentService`, and `DriverAssignmentProducer`. |
+| `driver-assigned` has records but nothing else happens | This is the intended Phase 3 result: no consumer has been implemented for that topic. |
+| A future assignment listener fails to deserialize the event | Add `com.routex.matching` to the JSON trusted-package allow-list and ensure its event type matches the JSON type metadata. |
+| Re-running the app processes old ride requests | The matching consumer uses `auto-offset-reset: earliest` for a group with no saved offsets. Existing saved offsets take precedence once the group has committed them. |
+
+## Completion criteria
+
+Phase 3 is complete when one HTTP request results in one `RideRequestedEvent` in `ride-requested` and one corresponding `DriverAssignmentEvent` in `driver-assigned`, both sharing the same `rideId`, with no consumer of `driver-assigned`.
