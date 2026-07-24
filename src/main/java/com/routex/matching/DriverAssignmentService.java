@@ -13,12 +13,12 @@ public class DriverAssignmentService {
             new Driver("D102", "Rahul", "KA-03-MN-7812"),
             new Driver("D103", "Kiran", "KA-05-ZX-1934")
     );
-    public DriverAssignedEvent assignDriver(RideRequestedEvent ride) {
+    public DriverAssignmentEvent assignDriver(RideRequestedEvent ride) {
         Driver driver = availableDrivers.get(
                 ThreadLocalRandom.current()
                         .nextInt(availableDrivers.size())
         );
-        return new DriverAssignedEvent(
+        return new DriverAssignmentEvent(
                 ride.rideId(),
                 ride.passengerId(),
                 driver.driverId(),
