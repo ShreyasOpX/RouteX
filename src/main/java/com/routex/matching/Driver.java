@@ -1,6 +1,6 @@
 package com.routex.matching;
 public record Driver(
-        String DriverId;
-        String DriverName;
-        String VehicleNumber;
+        String driverId,
+        String driverName,
+        String vehicleNumber
 ) {}
