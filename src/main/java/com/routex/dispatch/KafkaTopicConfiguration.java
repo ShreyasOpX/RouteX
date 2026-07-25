@@ -13,11 +13,15 @@ public class KafkaTopicConfiguration {
 
     @Bean
     NewTopic rideRequestedTopic() {
-        return TopicBuilder.name(RIDE_REQUESTED_TOPIC).build();
+        return TopicBuilder.name(RIDE_REQUESTED_TOPIC)
+                .partitions(3)
+                .build();
     }
     @Bean
     NewTopic driverAssignedTopic() {
-        return TopicBuilder.name(DRIVER_ASSIGNED_TOPIC).build();
+        return TopicBuilder.name(DRIVER_ASSIGNED_TOPIC)
+                .partitions(3)
+                .build();
     }
 }
 
