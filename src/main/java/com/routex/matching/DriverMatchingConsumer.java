@@ -16,7 +16,7 @@ public class DriverMatchingConsumer {
         this.driverAssignmentProducer = driverAssignmentProducer;
     }
 
-    @KafkaListener(topics = KafkaTopicConfiguration.RIDE_REQUESTED_TOPIC)
+    @KafkaListener(topics = KafkaTopicConfiguration.RIDE_REQUESTED_TOPIC, groupId = "driver-matching-group")
     public void handleRideRequested(RideRequestedEvent event) {
         DriverAssignmentEvent assignment = driverAssignmentService.assignDriver(event);
 //        System.out.printf(

@@ -7,7 +7,7 @@ import org.springframework.stereotype.Component;
 
 @Component
 public class DriverAssignmentNotificationConsumer {
-    @KafkaListener(topics = KafkaTopicConfiguration.DRIVER_ASSIGNED_TOPIC)
+    @KafkaListener(topics = KafkaTopicConfiguration.DRIVER_ASSIGNED_TOPIC, groupId = "notification-group")
     public void handleDriverAssigned(DriverAssignmentEvent event) {
         System.out.printf(
                 "NOTIFICATION: Passenger %s - Driver %s (%s) has been assigned to ride %s%n",
