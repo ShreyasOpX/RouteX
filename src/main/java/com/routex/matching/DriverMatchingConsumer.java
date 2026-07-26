@@ -3,6 +3,7 @@ package com.routex.matching;
 import com.routex.dispatch.KafkaTopicConfiguration;
 import com.routex.dispatch.RideRequestedEvent;
 import org.springframework.kafka.annotation.KafkaListener;
+import org.springframework.kafka.support.Acknowledgment;
 import org.springframework.kafka.support.KafkaHeaders;
 import org.springframework.messaging.handler.annotation.Header;
 import org.springframework.stereotype.Component;
@@ -19,7 +20,7 @@ public class DriverMatchingConsumer {
     }
 
     @KafkaListener(topics = KafkaTopicConfiguration.RIDE_REQUESTED_TOPIC, groupId = "driver-matching-group")
-    public void handleRideRequested(RideRequestedEvent event, @Header(KafkaHeaders.RECEIVED_PARTITION) int partition, @Header(KafkaHeaders.OFFSET) long offset) {
+    public void handleRideRequested(RideRequestedEvent event, @Header(KafkaHeaders.RECEIVED_PARTITION) int partition, @Header(KafkaHeaders.OFFSET) long offset, Acknowledgment acknowledgment) throws Exception {
         System.out.printf(
                 "MATCHING | ride=%s | partition=%d | offset=%d%n",
                 event.rideId(),
@@ -34,6 +35,11 @@ public class DriverMatchingConsumer {
 //                assignment.rideId()
 //        );
         driverAssignmentProducer.publish(assignment);
-
+        if ("failure-test".equals(event.passengerId())) {
+            throw new RuntimeException(
+                    "Simulated driver matching failure"
+            );
+        }
+        acknowledgment.acknowledge();
     }
 }
