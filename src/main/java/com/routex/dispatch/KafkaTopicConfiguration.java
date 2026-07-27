@@ -10,6 +10,7 @@ public class KafkaTopicConfiguration {
 
     public static final String RIDE_REQUESTED_TOPIC = "ride-requested";
     public static final String DRIVER_ASSIGNED_TOPIC = "driver-assigned";
+    public static final String RIDE_REQUESTED_DLT = "ride-requested-dlt";
 
     @Bean
     NewTopic rideRequestedTopic() {
@@ -21,6 +22,14 @@ public class KafkaTopicConfiguration {
     NewTopic driverAssignedTopic() {
         return TopicBuilder.name(DRIVER_ASSIGNED_TOPIC)
                 .partitions(3)
+                .build();
+    }
+    @Bean
+    public NewTopic rideRequestedDltTopic() {
+        return TopicBuilder
+                .name(RIDE_REQUESTED_DLT)
+                .partitions(3)
+                .replicas(1)
                 .build();
     }
 }
