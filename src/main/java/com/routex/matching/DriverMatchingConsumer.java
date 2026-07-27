@@ -19,27 +19,36 @@ public class DriverMatchingConsumer {
         this.driverAssignmentProducer = driverAssignmentProducer;
     }
 
-    @KafkaListener(topics = KafkaTopicConfiguration.RIDE_REQUESTED_TOPIC, groupId = "driver-matching-group")
-    public void handleRideRequested(RideRequestedEvent event, @Header(KafkaHeaders.RECEIVED_PARTITION) int partition, @Header(KafkaHeaders.OFFSET) long offset, Acknowledgment acknowledgment) throws Exception {
+    @KafkaListener(
+            topics = KafkaTopicConfiguration.RIDE_REQUESTED_TOPIC,
+            groupId = "driver-matching-group"
+    )
+    public void handleRideRequested(
+            RideRequestedEvent event,
+            @Header(KafkaHeaders.RECEIVED_PARTITION) int partition,
+            @Header(KafkaHeaders.OFFSET) long offset,
+            Acknowledgment acknowledgment
+    ) {
+
         System.out.printf(
                 "MATCHING | ride=%s | partition=%d | offset=%d%n",
                 event.rideId(),
                 partition,
                 offset
         );
-        DriverAssignmentEvent assignment = driverAssignmentService.assignDriver(event);
-//        System.out.printf(
-//                "MATCHING: Driver %s (%s) assigned to ride %s%n",
-//                assignment.driverName(),
-//                assignment.driverId(),
-//                assignment.rideId()
-//        );
-        driverAssignmentProducer.publish(assignment);
+
+        // Simulate processing failure BEFORE any downstream side effect
         if ("failure-test".equals(event.passengerId())) {
             throw new RuntimeException(
                     "Simulated driver matching failure"
             );
         }
+
+        DriverAssignmentEvent assignment =
+                driverAssignmentService.assignDriver(event);
+
+        driverAssignmentProducer.publish(assignment);
+
         acknowledgment.acknowledge();
     }
 }
