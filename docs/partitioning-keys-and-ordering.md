@@ -1,63 +1,61 @@
-# Partitioning, Keys, and Ordering
+# Partitioning, Message Keys, and Ordering
 
-## RouteX Configuration
+## RouteX Partition Strategy
 
-`KafkaTopicConfiguration` declares three partitions for each current topic:
-
-```text
-ride-requested                 driver-assigned
-├── partition 0                ├── partition 0
-├── partition 1                ├── partition 1
-└── partition 2                └── partition 2
-```
-
-`TopicBuilder.partitions(3)` sets the requested topic partition count. It is unrelated to `@KafkaListener` concurrency. If a topic already exists, inspect Kafka UI or broker metadata to confirm its effective runtime partition count; partition configuration cannot shrink an existing Kafka topic.
-
-## Partitions as Ordered Logs
-
-A topic is split into partitions. Each partition is an append-only, ordered log with its own offset sequence:
+Every application topic declared by `KafkaTopicConfiguration` has 3 partitions:
 
 ```text
-partition 0: offset 0 -> offset 1 -> offset 2 -> ...
-partition 1: offset 0 -> offset 1 -> offset 2 -> ...
-partition 2: offset 0 -> offset 1 -> offset 2 -> ...
+ride-requested        driver-assigned        ride-requested-dlt
+|- partition 0        |- partition 0         |- partition 0
+|- partition 1        |- partition 1         |- partition 1
+`- partition 2        `- partition 2         `- partition 2
 ```
 
-Kafka preserves ordering within one partition. It does not provide a single global ordering across all three partitions. Multiple ride IDs may share one partition, and unrelated rides in different partitions can be processed in parallel.
+A partition is an ordered append-only log. Each partition has an independent offset sequence, so partition 0 offset 5 and partition 1 offset 5 are different records. Partitions enable different rides to be processed in parallel; Kafka does not provide global ordering across all partitions.
 
-## Why RouteX Uses `rideId` as a Key
-
-Both producers call `KafkaTemplate.send(topic, event.rideId(), event)`. The record key is a string `rideId`:
+Both RouteX producers call `KafkaTemplate.send(topic, event.rideId(), event)`. No producer explicitly sets a partition. Kafka's partitioner uses the serialized `rideId` key and current topic partition metadata:
 
 ```text
-same rideId
-  -> same serialized key
-  -> consistent partition selection for that topic's current metadata
-  -> records for that ride remain in one partition
-  -> partition-local ordering is available
+same rideId -> same key -> same selected partition in that topic
+            -> order preserved within that partition
 ```
 
-The producer does not set `ProducerRecord.partition`; Kafka's partitioning logic selects it. This is valuable when RouteX later emits more events for a ride to the same topic: their relative order can be maintained without serializing all rides through one partition.
+Several ride IDs can share a partition. The same key does not mean the same numeric partition across different topics, and adding partitions can change the selection for future records while leaving older records where they are.
 
-There are important limits:
+## Practical Verification: Partitioning Experiment
 
-- This is ordering inside one topic partition, not a cross-topic transaction or global workflow order.
-- A numeric partition from `ride-requested` should not be assumed to equal the numeric partition from `driver-assigned`, even with the same key.
-- Changing a topic's partition count can change where future records for a key are mapped. Existing records remain in their old partitions, so do not use a partition-count change casually when strict per-key ordering across the transition matters.
-- Kafka's ordering guarantee does not make application side effects idempotent or remove the need to reason about retries.
+### Prerequisites
 
-## Parallelism Objective
+Start Docker Kafka and RouteX as shown in the [README](../README.md#run-locally).
 
-RouteX's target trade-off is:
+### Trigger
+
+Send several requests; each receives a different generated `rideId`, which is the Kafka key.
+
+```powershell
+Invoke-RestMethod -Method Post -Uri "http://localhost:8080/rides/requests" -ContentType "application/json" -Body '{"passengerId":"passenger-201","pickupLocation":"MSRIT","destinationLocation":"Electronic City"}'
+Invoke-RestMethod -Method Post -Uri "http://localhost:8080/rides/requests" -ContentType "application/json" -Body '{"passengerId":"passenger-202","pickupLocation":"MSRIT","destinationLocation":"Electronic City"}'
+Invoke-RestMethod -Method Post -Uri "http://localhost:8080/rides/requests" -ContentType "application/json" -Body '{"passengerId":"passenger-203","pickupLocation":"MSRIT","destinationLocation":"Electronic City"}'
+```
+
+### Expected Output
+
+For each generated ride ID, matching prints this shape:
 
 ```text
-parallelism between different rides
-            +
-ordering for records of the same ride within a topic partition
+MATCHING | ride=<generated-uuid> | partition=<0|1|2> | offset=<dynamic-offset>
 ```
 
-Three partitions permit three independently assigned partitions to be consumed concurrently within one group, provided there are enough consumer instances. The active application has only one instance per listener, so it currently demonstrates partitioned storage and assignment visibility more than parallel listener execution.
+### What This Demonstrates
 
-## Records and Headers
+Observe `rideId`, `partition`, and `offset`. Different UUIDs can land in different partitions, but a small sample can also place several rides in one partition. The source does not promise a particular partition for a particular generated UUID. Kafka UI can confirm the records under `ride-requested` partitions.
 
-Conceptually, every Kafka record includes topic, partition, key, value, offset, timestamp, and optional headers. RouteX explicitly supplies topic, key, and value. Both current listeners request the received partition header; `DriverMatchingConsumer` also requests the received offset header. They do not explicitly add application headers.
+## Ordering Experiment
+
+The public endpoint always generates a new ride ID, so it cannot submit two HTTP requests with the same key. The code nevertheless shows the ordering rule: both producer calls use their event's `rideId` key. If a future producer emitted multiple records for one ride to the same topic without a partition-count change, Kafka would append them to one partition in send order. This is partition-local ordering, not an end-to-end or cross-topic ordering guarantee.
+
+## Key Takeaways
+
+- Partitions are ordered logs and enable parallelism.
+- `rideId` is RouteX's key and influences partition selection.
+- Kafka guarantees order within a partition, never one global order over a multi-partition topic.

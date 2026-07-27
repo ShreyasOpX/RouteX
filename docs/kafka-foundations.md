@@ -1,75 +1,63 @@
 # Kafka Foundations in RouteX
 
-## Why Kafka is in RouteX
+## RouteX Mapping
 
-The HTTP endpoint should record the fact that a passenger requested a ride without directly invoking every downstream concern. In RouteX, the controller publishes `RideRequestedEvent`; matching and notification are reached through Kafka topic boundaries. This makes the producer independent of a consumer's Java method, runtime address, and processing speed.
-
-The earliest implementation in Git history had this smaller path:
+Kafka lets the HTTP API publish the fact that a ride was requested without calling matching or notification directly. A producer writes a record to a broker; consumers later read that stored record at their own pace.
 
 ```text
-RideRequestController -> KafkaTemplate -> ride-requested -> RideRequestedEventConsumer -> console
+HTTP request -> RideRequestController -> KafkaTemplate -> Kafka broker
+             -> topic/partition -> Spring listener container -> @KafkaListener method
 ```
 
-The original `RideRequestedEventConsumer` was subsequently replaced by `DriverMatchingConsumer`, and the workflow now publishes a second event. The lesson remains: a producer writes a record to the broker, then a consumer reads it later; it is not a direct method call.
-
-## RouteX's Local Kafka Infrastructure
-
-`compose.yaml` starts one Confluent Kafka 7.9.0 container named `routex-kafka` and Kafka UI. The Kafka process has both `broker` and `controller` roles for local KRaft operation.
-
-| Client location | Broker address |
+| Kafka concept | RouteX implementation |
 | --- | --- |
-| RouteX running on the host | `localhost:9092` |
-| Kafka UI running in Compose | `kafka:29092` |
-
-`spring.kafka.bootstrap-servers` is `localhost:9092`. A bootstrap server is the first address the client contacts to obtain cluster metadata; it is not a promise that every later broker connection uses that one address. This local setup has only one broker. `KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR` is `1`, and no Compose volume is declared for broker data.
-
-`spring.kafka.admin.fail-fast: true` makes application startup fail when the Kafka admin client cannot reach the broker. `KafkaTopicConfiguration` exposes `NewTopic` beans, allowing Spring's Kafka admin support to create the declared topics when needed.
-
-## Records, Producers, and Consumers
-
-A Kafka record can be understood as:
-
-```text
-ProducerRecord
-├── topic
-├── partition          selected by Kafka/partitioner unless supplied
-├── key
-├── value
-└── headers
-```
-
-RouteX supplies the topic, `rideId` key, and event value. It does not explicitly select a partition or add headers. Kafka stores serialized bytes, not Java records.
-
-| Concern | RouteX implementation |
-| --- | --- |
-| HTTP producer | `RideRequestController` |
-| Chained-event producer | `DriverAssignmentProducer` |
+| Broker | One local KRaft Kafka broker in `compose.yaml` |
+| Bootstrap server | `localhost:9092` in `application.yaml` |
+| Topics | `ride-requested`, `driver-assigned`, `ride-requested-dlt` |
 | Producer abstraction | `KafkaTemplate` |
-| Listener abstraction | `@KafkaListener` methods |
-| Broker | the Kafka Compose service |
-| Topic declarations | `KafkaTopicConfiguration` |
-| Consumers | `DriverMatchingConsumer`, `DriverAssignmentNotificationConsumer` |
+| Consumers | `DriverMatchingConsumer`, `DriverAssignmentNotificationConsumer`, `DeadLetterConsumer` |
+| Event values | Java records serialized as JSON |
+| Record key | `rideId` serialized as a string |
+| Listener abstraction | `@KafkaListener` and Spring Kafka listener containers |
 
-Spring Kafka creates listener containers around Kafka consumer clients. The containers poll, deserialize records, invoke the annotated methods, and manage the normal listener lifecycle.
+Kafka stores bytes, not Java objects. RouteX configures `StringSerializer`/`StringDeserializer` for keys and Spring Kafka JSON serializer/deserializer for values. The JSON trusted-package allow-list is `com.routex.dispatch,com.routex.matching`.
 
-## Serialization and Configuration
+`KafkaTopicConfiguration` supplies `NewTopic` beans. `spring.kafka.admin.fail-fast: true` means RouteX fails startup if its admin client cannot reach Kafka. Kafka UI connects from Docker at `kafka:29092` and is exposed on `http://localhost:8081`.
 
-The active YAML configuration uses `StringSerializer` for keys and Spring Kafka's `JsonSerializer` for values. Consumers use the matching string and JSON deserializers. JSON type metadata is accepted only from `com.routex.dispatch` and `com.routex.matching`, which covers the two event packages.
+## Practical Verification
 
-`auto-offset-reset: earliest` applies when a consumer group has no committed position for an assigned partition. It does not force a group with an existing committed position to reread everything. The configured default consumer group is `routex-ride-request-logger`, but both active listeners override it with their own explicit group IDs.
+### Prerequisites
 
-## Event-Driven Communication
-
-Kafka separates these responsibilities:
-
-```text
-dispatch publishes a fact
-        ↓
-matching reacts and publishes a new fact
-        ↓
-notification reacts to the new fact
+```powershell
+docker compose up -d
+mvn spring-boot:run
 ```
 
-This creates room for another independent group—such as analytics—to consume a topic later without modifying the existing producer. RouteX does not currently contain such a consumer, but that is the architectural property the topic boundary demonstrates.
+### Trigger
 
-For current topic contracts, see [ride-requested](ride-requested-topic.md) and [driver-assigned](driver-assigned-topic.md).
+```powershell
+Invoke-RestMethod -Method Post `
+    -Uri "http://localhost:8080/rides/requests" `
+    -ContentType "application/json" `
+    -Body '{"passengerId":"passenger-101","pickupLocation":"MSRIT","destinationLocation":"Electronic City"}'
+```
+
+### Expected Output
+
+The HTTP response contains the `RideRequestedEvent` fields, including `rideId=<generated-uuid>`. RouteX then prints lines in this actual format:
+
+```text
+MATCHING | ride=<generated-uuid> | partition=<0|1|2> | offset=<dynamic-offset>
+NOTIFICATION: Passenger passenger-101 - Driver <Arjun|Rahul|Kiran> (<vehicle-number>) has been assigned to ride <generated-uuid>
+MATCHING | ride=<generated-uuid> | partition=<0|1|2>
+```
+
+### What This Demonstrates
+
+The controller produced JSON to Kafka; Spring deserialized it for matching; matching produced a second event; notification consumed that second event. The matching line is emitted before driver selection and the notification line is emitted only after `driver-assigned` is consumed.
+
+## Key Takeaways
+
+- A Kafka producer writes a record to a broker, not directly to a consumer method.
+- A record has a topic, partition, key, value, headers, and an offset once stored.
+- Spring Boot configures Kafka clients from `application.yaml`; Spring Kafka supplies `KafkaTemplate` and listener containers.

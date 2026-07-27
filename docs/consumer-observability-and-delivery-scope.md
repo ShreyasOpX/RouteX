@@ -1,59 +1,50 @@
-# Consumer Observability and Delivery Scope
+# Consumer Observability
 
-## Active Consumer Observability
+## What RouteX Actually Logs
 
-The current matching listener requests `KafkaHeaders.RECEIVED_PARTITION` and `KafkaHeaders.OFFSET`, then prints:
+| Component | Actual source output | Metadata exposed |
+| --- | --- | --- |
+| `DriverMatchingConsumer` | `MATCHING | ride=%s | partition=%d | offset=%d` | ride ID, received partition, received offset |
+| `DriverAssignmentNotificationConsumer` | notification sentence, then `MATCHING | ride=%s | partition=%d` | passenger, driver, vehicle, ride ID, partition |
+| `DeadLetterConsumer` | `DLT | ride=%s | passenger=%s | partition=%d | offset=%d` plus one `DLT HEADER` line per header | DLT record value, DLT partition/offset, every header key/value |
 
-```text
-MATCHING | ride=<rideId> | partition=<partition> | offset=<offset>
+The notification consumer's second line is literally labelled `MATCHING` in source despite being notification output. No active source log includes topic name, consumer thread, consumer/client ID, group ID, timestamp, rebalance event, retry-attempt number, or metrics/tracing data.
+
+Partition and offset reveal where a matching record lives. A repeated matching line with the same partition/offset during `failure-test` is the observable sign that the same source record is being re-delivered; the code itself does not print an attempt counter.
+
+## Practical Verification
+
+### Prerequisites
+
+Start Docker Kafka and RouteX as shown in the [README](../README.md#run-locally).
+
+### Trigger
+
+```powershell
+Invoke-RestMethod -Method Post `
+    -Uri "http://localhost:8080/rides/requests" `
+    -ContentType "application/json" `
+    -Body '{"passengerId":"failure-test","pickupLocation":"MSRIT","destinationLocation":"Electronic City"}'
 ```
 
-The current notification listener prints an assignment summary and then a partition line. Its literal second log prefix is `MATCHING`, although it is emitted by `DriverAssignmentNotificationConsumer`:
+### Expected Output
+
+The application prints the matching format four times (one initial delivery plus three retries):
 
 ```text
-NOTIFICATION: Passenger <passengerId> - Driver <driverName> (<vehicleNumber>) has been assigned to ride <rideId>
-MATCHING | ride=<rideId> | partition=<partition>
+MATCHING | ride=<generated-uuid> | partition=<0|1|2> | offset=<same-dynamic-offset>
+...
+MATCHING | ride=<generated-uuid> | partition=<same-partition> | offset=<same-dynamic-offset>
 ```
 
-This makes the ride correlation ID and partition visible while exercising the application. It can help show which partition a keyed ride event reached, especially when comparing several requests in Kafka UI.
+Spring's framework logger may also print the thrown `Simulated driver matching failure`; its full format is not defined by RouteX source. No `NOTIFICATION` line is expected.
 
-The checked-out code does **not** log topic name, thread name, consumer/client ID, listener instance identity, group ID, timestamp, or a rebalance event. It has console output, not metrics, tracing, or monitoring infrastructure. The partition label in the notification consumer is also potentially misleading and should be read according to the source above.
+### What This Demonstrates
 
-## What Is Not Implemented Now
+The source logs enough record metadata to correlate retries with the same Kafka record. It does not identify individual consumer instances, so thread-level concurrency cannot be inferred from these lines.
 
-The active application has manual acknowledgement, configured as `spring.kafka.listener.ack-mode: manual`. Both listeners receive an `Acknowledgment` and invoke `acknowledge()` after normal processing. It does not have the following explicit mechanisms:
+## Key Takeaways
 
-- retry or backoff configuration;
-- a `DefaultErrorHandler` or custom error handler;
-- dead-letter topic / dead-letter publishing;
-- idempotency or duplicate-side-effect protection;
-- Kafka transactions or exactly-once processing;
-- producer send-result handling or callbacks;
-- consumer rebalance listeners;
-- replication configuration for the two application topics.
-
-`DriverMatchingConsumer` intentionally throws when `event.passengerId()` is `failure-test`. It does so after it publishes the assignment event and before `acknowledge()`. This is a useful failure boundary to study, but it is not a retry policy: without idempotency or a transaction, a redelivery can produce another assignment event.
-
-## Implementation Evolution in Git History
-
-The learning steps are retained here by concept rather than chronological labels:
-
-| Commit | Concept now present in the checked-out source |
-| --- | --- |
-| `935a494` | Initial `ride-requested` producer-to-consumer path. |
-| `ee307dd` / `e38e649` / `5328652` | Matching, chained `driver-assigned` event, and notification consumption. |
-| `61d314c` / `e88cb47` | Explicit consumer groups, three partitions, and partition visibility. |
-| `4ab51ed` | Matching-listener offset visibility. |
-| `93ddec8` | Manual acknowledgement and the simulated failure before matching acknowledgement. |
-
-An acknowledgement lets application code signal successful handling under the configured manual acknowledgement mode. It is not idempotency, a transaction, or an exactly-once guarantee. Likewise, the logged offset identifies a partition-local record position; it is not globally unique and is not the same as a group's committed offset.
-
-## Safe Next Observations
-
-With the current source, submit requests with different generated ride IDs and inspect:
-
-1. the partition printed by each listener;
-2. the records and partition metadata in Kafka UI; and
-3. the consumer groups `driver-matching-group` and `notification-group` in Kafka UI.
-
-This demonstrates topic storage, key-based partition selection, and separate group progress without claiming unimplemented reliability features.
+- Partition plus offset is a useful record identity inside a topic.
+- Logs must be interpreted according to their literal source; the notification partition line is mislabelled.
+- RouteX does not currently provide structured logging, metrics, tracing, or retry-attempt log fields.
