@@ -21,7 +21,8 @@ public class DriverMatchingConsumer {
 
     @KafkaListener(
             topics = KafkaTopicConfiguration.RIDE_REQUESTED_TOPIC,
-            groupId = "driver-matching-group"
+            groupId = "driver-matching-group",
+            concurrency = "3"
     )
     public void handleRideRequested(
             RideRequestedEvent event,
