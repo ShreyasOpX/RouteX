@@ -21,7 +21,9 @@ public class DriverMatchingConsumer {
 
     @KafkaListener(
             topics = KafkaTopicConfiguration.RIDE_REQUESTED_TOPIC,
-            groupId = "driver-matching-group"
+            groupId = "driver-matching-group",
+            concurrency = "3",
+            containerFactory = "driverMatchingKafkaListenerContainerFactory"
     )
     public void handleRideRequested(
             RideRequestedEvent event,
@@ -30,13 +32,15 @@ public class DriverMatchingConsumer {
             Acknowledgment acknowledgment
     ) {
 
+        String threadName = Thread.currentThread().getName();
+
         System.out.printf(
-                "MATCHING | ride=%s | partition=%d | offset=%d%n",
+                "MATCHING | ride=%s | partition=%d | offset=%d | thread=%s%n",
                 event.rideId(),
                 partition,
-                offset
+                offset,
+                threadName
         );
-
         // Simulate processing failure BEFORE any downstream side effect
         if ("failure-test".equals(event.passengerId())) {
             throw new RuntimeException(

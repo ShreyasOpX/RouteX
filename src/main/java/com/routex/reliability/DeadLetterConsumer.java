@@ -4,6 +4,7 @@ import com.routex.dispatch.KafkaTopicConfiguration;
 import com.routex.dispatch.RideRequestedEvent;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
 import org.springframework.kafka.annotation.KafkaListener;
+import org.springframework.kafka.support.Acknowledgment;
 import org.springframework.stereotype.Component;
 
 @Component
@@ -14,7 +15,8 @@ public class DeadLetterConsumer {
             groupId = "routex-dlt-monitor"
     )
     public void handleDeadLetter(
-            ConsumerRecord<String, RideRequestedEvent> record) {
+            ConsumerRecord<String, RideRequestedEvent> record,
+            Acknowledgment acknowledgment) {
 
         RideRequestedEvent event = record.value();
 
@@ -33,5 +35,7 @@ public class DeadLetterConsumer {
                         new String(header.value())
                 )
         );
+
+        acknowledgment.acknowledge();
     }
 }
