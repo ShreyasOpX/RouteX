@@ -11,7 +11,12 @@ import org.springframework.stereotype.Component;
 @Component
 public class DriverAssignmentNotificationConsumer {
     @KafkaListener(topics = KafkaTopicConfiguration.DRIVER_ASSIGNED_TOPIC, groupId = "notification-group")
-    public void handleDriverAssigned(DriverAssignmentEvent event, @Header(KafkaHeaders.RECEIVED_PARTITION) int partition, Acknowledgment acknowledge) {
+    public void handleDriverAssigned(
+            DriverAssignmentEvent event,
+            @Header(KafkaHeaders.RECEIVED_PARTITION) int partition,
+            @Header(KafkaHeaders.OFFSET) long offset,
+            Acknowledgment acknowledgment
+    ) {
         System.out.printf(
                 "NOTIFICATION: Passenger %s - Driver %s (%s) has been assigned to ride %s%n",
                 event.passengerId(),
@@ -19,11 +24,14 @@ public class DriverAssignmentNotificationConsumer {
                 event.vehicleNumber(),
                 event.rideId()
         );
+        String thread = Thread.currentThread().getName();
         System.out.printf(
-                "MATCHING | ride=%s | partition=%d%n",
+                "NOTIFICATION | ride=%s | partition=%d | offset=%d | thread=%s%n",
                 event.rideId(),
-                partition
+                partition,
+                offset,
+                thread
         );
-        acknowledge.acknowledge();
+        acknowledgment.acknowledge();
     }
 }

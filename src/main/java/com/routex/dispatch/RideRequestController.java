@@ -10,6 +10,8 @@ import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
+import org.springframework.kafka.support.SendResult;
+import java.util.concurrent.CompletableFuture;
 
 @RestController
 @RequestMapping("/rides")
@@ -31,7 +33,29 @@ public class RideRequestController {
                 Instant.now()
         );
 
-        kafkaTemplate.send(KafkaTopicConfiguration.RIDE_REQUESTED_TOPIC, event.rideId(), event);
+        //kafkaTemplate.send(KafkaTopicConfiguration.RIDE_REQUESTED_TOPIC, event.rideId(), event);
+        CompletableFuture<SendResult<String, RideRequestedEvent>> future = kafkaTemplate.send(KafkaTopicConfiguration.RIDE_REQUESTED_TOPIC, event.rideId(), event);
+        future.whenComplete((result, ex) -> {
+            if (ex != null) {
+                System.err.printf(
+                        "PRODUCER ERROR | topic=%s | key=%s | error=%s%n",
+                        KafkaTopicConfiguration.RIDE_REQUESTED_TOPIC,
+                        event.rideId(),
+                        ex.getMessage()
+                );
+                return;
+            }
+            var metadata = result.getRecordMetadata();
+            System.out.printf(
+                    "PRODUCER ACK | topic=%s | partition=%d | offset=%d | key=%s%n",
+                    metadata.topic(),
+                    metadata.partition(),
+                    metadata.offset(),
+                    event.rideId()
+            );
+        });
+
+
 
         return ResponseEntity.status(HttpStatus.ACCEPTED).body(event);
     }

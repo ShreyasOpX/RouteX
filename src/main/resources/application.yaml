@@ -11,6 +11,11 @@ spring:
     producer:
       key-serializer: org.apache.kafka.common.serialization.StringSerializer
       value-serializer: org.springframework.kafka.support.serializer.JsonSerializer
+      acks : all
+      retries : 2147483647
+      properties:
+        enable.idempotence: true
+        max.in.flight.requests.per.connection: 5
 
     consumer:
       group-id: routex-ride-request-logger
