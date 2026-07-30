@@ -13,9 +13,11 @@ spring:
       value-serializer: org.springframework.kafka.support.serializer.JsonSerializer
       acks : all
       retries : 2147483647
+      batch-size : 32768
       properties:
         enable.idempotence: true
         max.in.flight.requests.per.connection: 5
+        linger.ms : 500
 
     consumer:
       group-id: routex-ride-request-logger
