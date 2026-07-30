@@ -12,6 +12,7 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.kafka.support.SendResult;
 import java.util.concurrent.CompletableFuture;
+import org.springframework.web.bind.annotation.PathVariable;
 
 @RestController
 @RequestMapping("/rides")
@@ -30,19 +31,19 @@ public class RideRequestController {
                 request.passengerId(),
                 request.pickupLocation(),
                 request.destinationLocation(),
-                Instant.now()
-        );
+                Instant.now());
 
-        //kafkaTemplate.send(KafkaTopicConfiguration.RIDE_REQUESTED_TOPIC, event.rideId(), event);
-        CompletableFuture<SendResult<String, RideRequestedEvent>> future = kafkaTemplate.send(KafkaTopicConfiguration.RIDE_REQUESTED_TOPIC, event.rideId(), event);
+        // kafkaTemplate.send(KafkaTopicConfiguration.RIDE_REQUESTED_TOPIC,
+        // event.rideId(), event);
+        CompletableFuture<SendResult<String, RideRequestedEvent>> future = kafkaTemplate
+                .send(KafkaTopicConfiguration.RIDE_REQUESTED_TOPIC, event.rideId(), event);
         future.whenComplete((result, ex) -> {
             if (ex != null) {
                 System.err.printf(
                         "PRODUCER ERROR | topic=%s | key=%s | error=%s%n",
                         KafkaTopicConfiguration.RIDE_REQUESTED_TOPIC,
                         event.rideId(),
-                        ex.getMessage()
-                );
+                        ex.getMessage());
                 return;
             }
             var metadata = result.getRecordMetadata();
@@ -51,13 +52,29 @@ public class RideRequestController {
                     metadata.topic(),
                     metadata.partition(),
                     metadata.offset(),
-                    event.rideId()
-            );
+                    event.rideId());
         });
-
-
 
         return ResponseEntity.status(HttpStatus.ACCEPTED).body(event);
     }
-}
 
+    @PostMapping("/bulk/{count}")
+    public ResponseEntity<String> bulkPublish(@PathVariable int count) {
+        for (int i = 0; i < count; i++) {
+
+            RideRequestedEvent event = new RideRequestedEvent(
+                    UUID.randomUUID().toString(),
+                    "P" + i,
+                    "MSRIT",
+                    "AIRPORT",
+                    Instant.now());
+
+            kafkaTemplate.send(
+                    KafkaTopicConfiguration.RIDE_REQUESTED_TOPIC,
+                    event.rideId(),
+                    event);
+        }
+
+        return ResponseEntity.ok("Published " + count + " ride requests.");
+    }
+}
