@@ -11,22 +11,40 @@ spring:
     producer:
       key-serializer: org.apache.kafka.common.serialization.StringSerializer
       value-serializer: org.springframework.kafka.support.serializer.JsonSerializer
-      acks : all
-      retries : 2147483647
-      batch-size : 32768
-      compression-type : zstd
+
+      acks: all
+      retries: 2147483647
+      batch-size: 32768
+      compression-type: zstd
+
       properties:
         enable.idempotence: true
         max.in.flight.requests.per.connection: 5
-        linger.ms : 500
+        linger.ms: 500
 
     consumer:
       group-id: routex-ride-request-logger
       auto-offset-reset: earliest
+
       key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
       value-deserializer: org.springframework.kafka.support.serializer.JsonDeserializer
+
       properties:
         spring.json.trusted.packages: com.routex.dispatch,com.routex.matching
 
     listener:
       ack-mode: manual
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics,prometheus
+
+  endpoint:
+    health:
+      show-details: always
+
+  metrics:
+    tags:
+      application: routex
