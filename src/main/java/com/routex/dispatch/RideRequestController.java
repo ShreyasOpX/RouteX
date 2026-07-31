@@ -13,6 +13,9 @@ import org.springframework.web.bind.annotation.RestController;
 import org.springframework.kafka.support.SendResult;
 import java.util.concurrent.CompletableFuture;
 import org.springframework.web.bind.annotation.PathVariable;
+import com.routex.response.BenchmarkResponse;
+import java.util.ArrayList;
+import java.util.List;
 
 @RestController
 @RequestMapping("/rides")
@@ -59,7 +62,9 @@ public class RideRequestController {
     }
 
     @PostMapping("/bulk/{count}")
-    public ResponseEntity<String> bulkPublish(@PathVariable int count) {
+    public ResponseEntity<BenchmarkResponse> bulkPublish(@PathVariable int count) {
+        long start = System.nanoTime();
+        List<CompletableFuture<SendResult<String, RideRequestedEvent>>> futures = new ArrayList<>();
         for (int i = 0; i < count; i++) {
 
             RideRequestedEvent event = new RideRequestedEvent(
@@ -69,12 +74,32 @@ public class RideRequestController {
                     "AIRPORT",
                     Instant.now());
 
-            kafkaTemplate.send(
+            // kafkaTemplate.send(
+            // KafkaTopicConfiguration.RIDE_REQUESTED_TOPIC,
+            // event.rideId(),
+            // event);
+            CompletableFuture<SendResult<String, RideRequestedEvent>> future = kafkaTemplate.send(
                     KafkaTopicConfiguration.RIDE_REQUESTED_TOPIC,
                     event.rideId(),
                     event);
+
+            futures.add(future);
         }
 
-        return ResponseEntity.ok("Published " + count + " ride requests.");
+        CompletableFuture.allOf(
+                futures.toArray(new CompletableFuture[0])).join();
+
+        long end = System.nanoTime();
+
+        long durationMs = (end - start) / 1_000_000;
+
+        double throughputPerSecond = count / (durationMs / 1000.0);
+
+        BenchmarkResponse response = new BenchmarkResponse(
+                count,
+                durationMs,
+                throughputPerSecond);
+
+        return ResponseEntity.ok(response);
     }
 }
