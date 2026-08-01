@@ -53,7 +53,7 @@ There is rarely one universal Kafka setting; discuss durability, latency, orderi
 ## Common mistakes
 
 - Giving definitions without a system boundary.
-- Claiming RouteX implements transactions or production resilience it does not show.
+- Claiming RouteX implements production resilience it does not show.
 
 ## Best practices
 
@@ -68,9 +68,8 @@ Answer: requirement → RouteX behavior → Kafka mechanism → production alter
 | Why manual ack? | RouteX makes its success boundary explicit. | Does it guarantee EOS? No. |
 | Why a DLT? | To preserve exhausted failures and unblock source progress. | Who owns replay? An operational process, not Kafka automatically. |
 
-**Enterprise discussion:** State what RouteX lacks—security, persistence, tests, schema governance, and active transaction execution—before proposing a production solution.
+**Enterprise discussion:** State what RouteX lacks—security, persistence, tests, and schema governance—before proposing a production solution.
 
 ## Quick revision
 
 Tie every answer to a RouteX class, then discuss Kafka mechanism and production trade-off.
-

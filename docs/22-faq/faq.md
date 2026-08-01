@@ -54,7 +54,6 @@ Kafka improves decoupling and replayability while adding distributed-system oper
 
 - **Does RouteX send email/SMS?** No; notification is console output only.
 - **Does RouteX persist drivers or rides?** No; drivers are an in-memory list and no database is configured.
-- **Does RouteX implement end-to-end exactly once?** No; active code does not execute Kafka transactions.
 - **Does `failure-test` publish an assignment?** No; it throws before assignment publishing.
 - **Does a DLT replay automatically?** No; RouteX only monitors recovered records.
 
@@ -72,4 +71,4 @@ Verify behavior in code and Kafka UI before extending a learning assumption into
 
 ## Quick revision
 
-RouteX demonstrates event flow, partitions, groups, ack, retry, and DLT; it does not implement persistence, security, tests, or EOS.
+RouteX demonstrates event flow, partitions, groups, ack, retry, and DLT; it does not implement persistence, security, or tests.

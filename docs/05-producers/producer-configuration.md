@@ -14,7 +14,7 @@ It explains configuration in the context of RouteX sends instead of listing prop
 
 ## RouteX implementation
 
-The producer section is the source of truth; `transaction-id-prefix` is configured, while no active producer code calls `executeInTransaction`.
+The producer section is the source of truth for RouteX's non-transactional producer behavior.
 
 ## Code walkthrough
 
@@ -45,7 +45,7 @@ The configured DEBUG/TRACE Kafka client loggers reveal producer and network life
 | --- | --- |
 | Local broker | Replication and ISR policy matched to durability targets |
 | Fixed tuning | Load-tested, workload-specific tuning |
-| Configured transaction prefix | Transaction use only when application code defines transaction boundaries |
+| Non-transactional sends | Explicit send-future failure handling at each producer boundary |
 
 ## Trade-offs
 
@@ -54,7 +54,7 @@ Linger and batching increase throughput but add waiting; stronger acknowledgemen
 ## Common mistakes
 
 - Setting values without measuring workload effects.
-- Calling configured transaction capability an implemented exactly-once workflow.
+- Treating an asynchronous send as a completed downstream workflow.
 
 ## Best practices
 
@@ -70,5 +70,4 @@ Explain settings alongside failure and latency requirements; verify effective ru
 
 ## Quick revision
 
-RouteX producer config balances durable acknowledgements with batching and compression; transactions are not executed by active code.
-
+RouteX producer config balances durable acknowledgements with batching and compression.

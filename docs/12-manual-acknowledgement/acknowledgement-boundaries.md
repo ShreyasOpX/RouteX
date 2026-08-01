@@ -66,7 +66,7 @@ Design work to tolerate redelivery and acknowledge after the required local succ
 
 **Follow-up:** Does manual ack alone guarantee exactly once? No.
 
-**Enterprise discussion:** Combine idempotency, transactions where appropriate, and observable retries.
+**Enterprise discussion:** Combine idempotency, durable side-effect design, and observable retries.
 
 ## Quick revision
 
