@@ -1,86 +1,110 @@
 # RouteX
 
-## Overview
+> Learn Apache Kafka and Spring Kafka by following one event through a production-inspired ride-dispatch workflow.
 
-RouteX is a Spring Boot and Apache Kafka learning project built around a small ride-dispatch workflow. An HTTP ride request becomes a keyed Kafka event, matching assigns an in-memory demo driver, and notification consumes the resulting assignment. The project also demonstrates manual acknowledgements, retry backoff, recovery with `DeadLetterPublishingRecoverer`, and inspection of dead-letter records.
+RouteX is a Java 21 / Spring Boot application that accepts ride requests over HTTP, publishes them to Kafka, assigns an in-memory demo driver, publishes an assignment event, and consumes that event for a console notification. The project deliberately keeps the business domain small so that Kafka behaviour stays visible.
 
-The domain is deliberately small: driver selection is random from three in-memory drivers and notification is console output. That keeps Kafka behaviour visible.
+## Why Kafka in a ride workflow?
+
+In RouteX, ride intake does not call matching or notification directly. It publishes a `RideRequestedEvent` to `ride-requested`. Matching and notification are independent Kafka consumers with their own progress and failure handling. This demonstrates the event-driven boundary used when services must evolve, scale, or recover independently.
+
+## Features
+
+| Area | Demonstrated in RouteX |
+| --- | --- |
+| Event pipeline | HTTP request → `ride-requested` → matching → `driver-assigned` → notification |
+| Topics and keys | Three application topics; records keyed by `rideId` |
+| Parallel consumption | Three matching listener containers for three input partitions |
+| Delivery control | Manual acknowledgement after successful listener work |
+| Reliability | Fixed retry backoff and explicit dead-letter-topic recovery |
+| Operations | Local KRaft Kafka, Kafka UI, rebalance logging, and Actuator endpoints |
 
 ## Architecture
 
 ```mermaid
 flowchart LR
-    C[HTTP client] -->|POST /rides/requests| R[RideRequestController]
-    R -->|RideRequestedEvent; key=rideId| RR[ride-requested; 3 partitions]
-    RR -->|driver-matching-group| M[DriverMatchingConsumer]
-    M -->|success| S[DriverAssignmentService]
+    C[HTTP client] --> R[RideRequestController]
+    R -->|RideRequestedEvent<br/>key: rideId| RR[ride-requested<br/>3 partitions]
+    RR -->|driver-matching-group<br/>concurrency: 3| M[DriverMatchingConsumer]
+    M --> S[DriverAssignmentService]
     S --> P[DriverAssignmentProducer]
-    P -->|DriverAssignmentEvent; key=rideId| DA[driver-assigned; 3 partitions]
-    DA -->|notification-group| N[DriverAssignmentNotificationConsumer]
-    M -->|failure-test: initial + 3 retries| EH[DefaultErrorHandler]
-    EH --> RCV[DeadLetterPublishingRecoverer]
-    RCV -. default destination .-> DOT[ride-requested.DLT]
-    DLT[ride-requested-dlt; 3 partitions] -->|routex-dlt-monitor| DLC[DeadLetterConsumer]
+    P -->|DriverAssignmentEvent<br/>key: rideId| DA[driver-assigned<br/>3 partitions]
+    DA -->|notification-group| N[Notification consumer]
+    M -->|failure-test| E[DefaultErrorHandler]
+    E -->|3 retries, 2 seconds| D[ride-requested-dlt]
+    D -->|routex-dlt-monitor| DL[DeadLetterConsumer]
 ```
 
-The solid success path is active. The dotted recovery path exposes an important current configuration mismatch: `DeadLetterConsumer` listens to `ride-requested-dlt`, but `DeadLetterPublishingRecoverer` is constructed without a destination resolver and therefore uses Spring Kafka's default `ride-requested.DLT` destination. See [Dead-letter topics and recovery](docs/dead-letter-topics-and-recovery.md).
+## Event Flow
 
-## Current Kafka Capabilities
+```mermaid
+sequenceDiagram
+    participant H as HTTP client
+    participant R as RouteX
+    participant K as Kafka
+    participant M as Matching
+    participant N as Notification
+    H->>R: POST /rides/requests
+    R->>K: RideRequestedEvent (rideId key)
+    R-->>H: 202 Accepted
+    K->>M: ride-requested record
+    M->>K: DriverAssignmentEvent (rideId key)
+    K->>N: driver-assigned record
+```
 
-| Area | Current implementation |
-| --- | --- |
-| Topics | `ride-requested`, `driver-assigned`, and declared `ride-requested-dlt` |
-| Keys | Both producers use `rideId` |
-| Partitions | 3 for every declared application topic |
-| Consumer groups | `driver-matching-group`, `notification-group`, `routex-dlt-monitor` |
-| Concurrency | No listener concurrency setting; default one consumer instance per listener |
-| Observability | Matching logs ride ID, partition, and offset; DLT consumer logs record partition/offset and every header it receives |
-| Acknowledgement | `spring.kafka.listener.ack-mode: manual`; active listeners acknowledge successful work |
-| Retries | `FixedBackOff(2000L, 3L)` in `KafkaErrorHandlerConfiguration` |
-| Recovery | `DefaultErrorHandler` with `DeadLetterPublishingRecoverer` |
+## Tech Stack
 
-## Run Locally
+Java 21 · Spring Boot 3.5.16 · Spring for Apache Kafka · Confluent Platform 7.9.0 · Docker Compose · Kafka UI · Maven
 
-Prerequisites: Java 21, Maven available as `mvn`, Docker, and Docker Compose.
+## Quick Start
 
 ```powershell
 docker compose up -d
 mvn spring-boot:run
 ```
 
-Kafka is available to RouteX at `localhost:9092`; Kafka UI is at `http://localhost:8081`.
+Kafka is exposed at `localhost:9092`; Kafka UI is at `http://localhost:8081`.
 
-## Quick Demo
+## API Summary
 
-Normal ride:
-
-```powershell
-Invoke-RestMethod -Method Post `
-    -Uri "http://localhost:8080/rides/requests" `
-    -ContentType "application/json" `
-    -Body '{"passengerId":"passenger-101","pickupLocation":"MSRIT","destinationLocation":"Electronic City"}'
-```
-
-Expect a `202` response containing a generated ride ID, then matching and notification console lines. This demonstrates the successful event chain. Details: [ride-requested](docs/ride-requested-topic.md).
-
-Deliberately failing ride:
+| Method | Endpoint | Description |
+| --- | --- | --- |
+| `POST` | `/rides/requests` | Creates and publishes one ride request |
+| `POST` | `/rides/bulk/{count}` | Publishes generated ride requests and waits for send futures |
 
 ```powershell
 Invoke-RestMethod -Method Post `
-    -Uri "http://localhost:8080/rides/requests" `
-    -ContentType "application/json" `
-    -Body '{"passengerId":"failure-test","pickupLocation":"MSRIT","destinationLocation":"Electronic City"}'
+  -Uri "http://localhost:8080/rides/requests" `
+  -ContentType "application/json" `
+  -Body '{"passengerId":"passenger-101","pickupLocation":"MSRIT","destinationLocation":"Electronic City"}'
 ```
 
-Expect the matching line once initially and three more times after roughly two-second backoffs, followed by framework recovery handling. The RouteX source currently does not route that recovered record to its declared DLT listener because of the topic-name mismatch noted above. Details: [retries and error handling](docs/kafka-retries-and-error-handling.md).
+## Learning Roadmap
 
-## Technical Documentation
+1. [Start and observe your first event](docs/01-getting-started/README.md)
+2. [Understand the system architecture](docs/02-system-architecture/architecture.md)
+3. [Learn Kafka through RouteX](docs/04-kafka-fundamentals/kafka-through-routex.md)
+4. [Follow producers, consumers, partitions, groups, offsets, retries, and DLT recovery](docs/05-producers/ride-request-producer.md)
+5. [Compare RouteX with production systems](docs/19-production-guide/production-gaps-and-evolution.md)
+6. [Revise with the interview guide and cheat sheet](docs/20-interview-guide/kafka-through-routex-interviews.md)
 
-- [Kafka foundations](docs/kafka-foundations.md)
-- [The `ride-requested` topic](docs/ride-requested-topic.md)
-- [The `driver-assigned` topic](docs/driver-assigned-topic.md)
-- [Partitioning, message keys, and ordering](docs/partitioning-keys-and-ordering.md)
-- [Consumer groups, concurrency, and offsets](docs/consumer-groups-concurrency-and-offsets.md)
-- [Consumer observability](docs/consumer-observability-and-delivery-scope.md)
-- [Retries and error handling](docs/kafka-retries-and-error-handling.md)
-- [Dead-letter topics and recovery](docs/dead-letter-topics-and-recovery.md)
+## Documentation Index
+
+| Path | Focus |
+| --- | --- |
+| [01 Getting started](docs/01-getting-started/README.md) | Local setup and first observation |
+| [02 System architecture](docs/02-system-architecture/architecture.md) | Components, packages, and event flow |
+| [03 Event-driven architecture](docs/03-event-driven-architecture/decoupling-with-events.md) | Why RouteX uses events |
+| [04 Kafka fundamentals](docs/04-kafka-fundamentals/kafka-through-routex.md) | Kafka concepts mapped to the code |
+| [05–06 Producers and consumers](docs/05-producers/ride-request-producer.md) | Client and listener behaviour |
+| [07–14 Topic to DLT](docs/07-topics/topic-provisioning.md) | Topology, ordering, groups, offsets, acknowledgements, retries |
+| [15–16 Operations](docs/15-producer-performance/batching-compression-and-acks.md) | Producer tuning and observability |
+| [17–22 Reference and revision](docs/17-api-reference/ride-api.md) | API, production, interview, cheat sheet, FAQ |
+
+## Contributing
+
+Contributions should preserve the learning-first approach: tie claims to executable source, use RouteX before general theory, and distinguish production guidance from current implementation.
+
+## License
+
+No license file is currently present. Add one before treating the repository as openly reusable.

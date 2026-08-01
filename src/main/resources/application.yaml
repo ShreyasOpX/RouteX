@@ -14,8 +14,12 @@ spring:
 
       acks: all
       retries: 2147483647
+
       batch-size: 32768
       compression-type: zstd
+
+      # Required for Kafka Transactions
+      transaction-id-prefix: routex-tx-
 
       properties:
         enable.idempotence: true
@@ -39,7 +43,7 @@ management:
   endpoints:
     web:
       exposure:
-        include: health,info,metrics,prometheus
+        include: health,info,metrics,prometheus,env,configprops,beans
 
   endpoint:
     health:
@@ -48,3 +52,12 @@ management:
   metrics:
     tags:
       application: routex
+
+logging:
+  level:
+    org.springframework.kafka: DEBUG
+
+    org.apache.kafka.clients.Metadata: DEBUG
+    org.apache.kafka.clients.NetworkClient: DEBUG
+    org.apache.kafka.clients.producer.KafkaProducer: DEBUG
+    org.apache.kafka.clients.producer.internals.TransactionManager: TRACE
